@@ -1,0 +1,13 @@
+{
+  "name": "looksmaxer-backend",
+  "version": "1.0.0",
+  "description": "Backend dla aplikacji Looksmaxer Portal",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "bcrypt": "^5.1.1",
+    "pg": "^8.11.3"
+  }
+}
