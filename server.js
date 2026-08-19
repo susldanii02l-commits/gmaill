@@ -100,7 +100,7 @@ function readRawBody(req) {
 
 async function markUserAsPaid(email) {
   if (!email) {
-    console.log("Brak emaila - nie można ustawić has_paid.");
+    console.log("Brak emaila.");
     return false;
   }
 
@@ -399,7 +399,6 @@ const server = http.createServer(async (req, res) => {
 
       const session =
         await stripe.checkout.sessions.create({
-
           payment_method_types: [
             'card',
             'blik'
@@ -414,7 +413,9 @@ const server = http.createServer(async (req, res) => {
                   name: 'Dostęp do serwisu'
                 },
 
-                // 2900 groszy = 29,00 PLN
+                // =====================================
+                // 29,00 PLN
+                // =====================================
                 unit_amount: 2900
               },
 
