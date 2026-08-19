@@ -37,11 +37,6 @@ async function setupDatabase() {
       ADD COLUMN IF NOT EXISTS has_paid BOOLEAN DEFAULT FALSE;
     `);
 
-    // =================================================
-    // KONTA TESTOWE / ADMINISTRACYJNE
-    // USTAWIAMY JE JEDNORAZOWO JAKO OPŁACONE
-    // =================================================
-
     await pool.query(`
       UPDATE users
       SET has_paid = TRUE
@@ -53,6 +48,7 @@ async function setupDatabase() {
 
     console.log("Tabela users jest gotowa.");
     console.log("Wybrane konta zostały oznaczone jako opłacone.");
+
   } catch (err) {
     console.error("Błąd konfiguracji bazy danych:", err);
   }
@@ -180,10 +176,6 @@ const server = http.createServer(async (req, res) => {
 
   // ===================================================
   // STRIPE WEBHOOK
-  //
-  // UWAGA:
-  // MUSI BYĆ PRZED readBody(), ponieważ Stripe
-  // wymaga surowego body do weryfikacji podpisu.
   // ===================================================
 
   if (
@@ -196,6 +188,7 @@ const server = http.createServer(async (req, res) => {
 
       if (!signature) {
         console.error("Brak stripe-signature.");
+
         return send(res, 400, {
           error: 'Brak podpisu Stripe.'
         });
@@ -203,6 +196,7 @@ const server = http.createServer(async (req, res) => {
 
       if (!process.env.STRIPE_WEBHOOK_SECRET) {
         console.error("Brak STRIPE_WEBHOOK_SECRET w Railway.");
+
         return send(res, 500, {
           error: 'Brak konfiguracji webhooka Stripe.'
         });
@@ -241,7 +235,6 @@ const server = http.createServer(async (req, res) => {
           session.id
         );
 
-        // Dla bezpieczeństwa sprawdzamy status płatności.
         if (session.payment_status === 'paid') {
 
           const email =
@@ -280,10 +273,6 @@ const server = http.createServer(async (req, res) => {
 
         await markUserAsPaid(email);
       }
-
-      // =================================================
-      // INFORMUJEMY STRIPE, ŻE EVENT ZOSTAŁ ODEBRANY
-      // =================================================
 
       return send(res, 200, {
         received: true
@@ -451,7 +440,6 @@ const server = http.createServer(async (req, res) => {
         });
       }
 
-      // Sprawdzamy, czy konto istnieje.
       const userResult = await pool.query(
         `
           SELECT id, email, has_paid
@@ -470,7 +458,6 @@ const server = http.createServer(async (req, res) => {
 
       const user = userResult.rows[0];
 
-      // Jeśli już zapłacił, nie tworzymy kolejnej płatności.
       if (user.has_paid === true) {
         return send(res, 400, {
           error: 'To konto ma już opłacony dostęp.'
@@ -479,6 +466,7 @@ const server = http.createServer(async (req, res) => {
 
       const session =
         await stripe.checkout.sessions.create({
+
           payment_method_types: [
             'card',
             'blik'
@@ -493,7 +481,10 @@ const server = http.createServer(async (req, res) => {
                   name: 'Dostęp do serwisu'
                 },
 
-                unit_amount: 1900
+                // =====================================
+                // 200 GROSZY = 2,00 PLN
+                // =====================================
+                unit_amount: 200
               },
 
               quantity: 1
@@ -504,9 +495,6 @@ const server = http.createServer(async (req, res) => {
 
           customer_email: email,
 
-          // Email zapisany również w metadata.
-          // Dzięki temu webhook wie, któremu
-          // użytkownikowi nadać dostęp.
           metadata: {
             email: email,
             user_id: String(user.id)
@@ -538,10 +526,6 @@ const server = http.createServer(async (req, res) => {
 
   // ===================================================
   // SUCCESS
-  //
-  // WAŻNE:
-  // TA STRONA NIE USTAWIA has_paid.
-  // Robi to WYŁĄCZNIE WEBHOOK STRIPE.
   // ===================================================
 
   if (
@@ -557,6 +541,7 @@ const server = http.createServer(async (req, res) => {
     return res.end(`
       <!DOCTYPE html>
       <html lang="pl">
+
       <head>
         <meta charset="UTF-8">
         <title>Płatność zakończona</title>
@@ -603,6 +588,7 @@ const server = http.createServer(async (req, res) => {
     return res.end(`
       <!DOCTYPE html>
       <html lang="pl">
+
       <head>
         <meta charset="UTF-8">
         <title>Płatność anulowana</title>
