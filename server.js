@@ -5,20 +5,12 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
 const PORT = process.env.PORT || 3000;
 
-// =====================================================
-// POŁĄCZENIE Z POSTGRESQL
-// =====================================================
-
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.DATABASE_URL
     ? { rejectUnauthorized: false }
     : false
 });
-
-// =====================================================
-// TWORZENIE / AKTUALIZACJA BAZY
-// =====================================================
 
 async function setupDatabase() {
   try {
@@ -47,18 +39,12 @@ async function setupDatabase() {
     `);
 
     console.log("Tabela users jest gotowa.");
-    console.log("Wybrane konta zostały oznaczone jako opłacone.");
-
   } catch (err) {
     console.error("Błąd konfiguracji bazy danych:", err);
   }
 }
 
 setupDatabase();
-
-// =====================================================
-// WYSYŁANIE JSON
-// =====================================================
 
 function send(res, status, body) {
   res.writeHead(status, {
@@ -70,10 +56,6 @@ function send(res, status, body) {
 
   res.end(JSON.stringify(body));
 }
-
-// =====================================================
-// ODCZYTYWANIE JSON
-// =====================================================
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -100,10 +82,6 @@ function readBody(req) {
   });
 }
 
-// =====================================================
-// ODCZYTYWANIE SUROWEGO BODY DLA STRIPE WEBHOOK
-// =====================================================
-
 function readRawBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -119,10 +97,6 @@ function readRawBody(req) {
     req.on('error', reject);
   });
 }
-
-// =====================================================
-// USTAWIENIE UŻYTKOWNIKA JAKO OPŁACONEGO
-// =====================================================
 
 async function markUserAsPaid(email) {
   if (!email) {
@@ -154,14 +128,10 @@ async function markUserAsPaid(email) {
   return true;
 }
 
-// =====================================================
-// SERVER
-// =====================================================
-
 const server = http.createServer(async (req, res) => {
 
   // ===================================================
-  // CORS PREFLIGHT
+  // CORS
   // ===================================================
 
   if (req.method === 'OPTIONS') {
@@ -187,16 +157,12 @@ const server = http.createServer(async (req, res) => {
       const signature = req.headers['stripe-signature'];
 
       if (!signature) {
-        console.error("Brak stripe-signature.");
-
         return send(res, 400, {
           error: 'Brak podpisu Stripe.'
         });
       }
 
       if (!process.env.STRIPE_WEBHOOK_SECRET) {
-        console.error("Brak STRIPE_WEBHOOK_SECRET w Railway.");
-
         return send(res, 500, {
           error: 'Brak konfiguracji webhooka Stripe.'
         });
@@ -223,48 +189,24 @@ const server = http.createServer(async (req, res) => {
 
       console.log(`Stripe event: ${event.type}`);
 
-      // =================================================
-      // ZWYKŁA UDANA PŁATNOŚĆ
-      // =================================================
-
       if (event.type === 'checkout.session.completed') {
         const session = event.data.object;
 
-        console.log(
-          "Checkout session completed:",
-          session.id
-        );
-
         if (session.payment_status === 'paid') {
-
           const email =
             session.metadata?.email ||
             session.customer_details?.email ||
             session.customer_email;
 
           await markUserAsPaid(email);
-
-        } else {
-          console.log(
-            `Sesja ${session.id} nie ma jeszcze statusu paid.`
-          );
         }
       }
-
-      // =================================================
-      // PŁATNOŚĆ ASYNCHRONICZNA
-      // =================================================
 
       if (
         event.type ===
         'checkout.session.async_payment_succeeded'
       ) {
         const session = event.data.object;
-
-        console.log(
-          "Async payment succeeded:",
-          session.id
-        );
 
         const email =
           session.metadata?.email ||
@@ -279,10 +221,7 @@ const server = http.createServer(async (req, res) => {
       });
 
     } catch (err) {
-      console.error(
-        "Błąd webhooka Stripe:",
-        err
-      );
+      console.error("Błąd webhooka Stripe:", err);
 
       return send(res, 500, {
         error: 'Błąd webhooka Stripe.'
@@ -334,10 +273,7 @@ const server = http.createServer(async (req, res) => {
       });
 
     } catch (err) {
-      console.error(
-        "Błąd rejestracji:",
-        err
-      );
+      console.error("Błąd rejestracji:", err);
 
       return send(res, 400, {
         error:
@@ -407,10 +343,7 @@ const server = http.createServer(async (req, res) => {
       });
 
     } catch (err) {
-      console.error(
-        "Błąd logowania:",
-        err
-      );
+      console.error("Błąd logowania:", err);
 
       return send(res, 500, {
         error: 'Błąd serwera podczas logowania'
@@ -419,7 +352,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ===================================================
-  // TWORZENIE SESJI STRIPE CHECKOUT
+  // STRIPE CHECKOUT — 29 PLN
   // ===================================================
 
   if (
@@ -481,10 +414,8 @@ const server = http.createServer(async (req, res) => {
                   name: 'Dostęp do serwisu'
                 },
 
-                // =====================================
-                // 200 GROSZY = 2,00 PLN
-                // =====================================
-                unit_amount: 200
+                // 2900 groszy = 29,00 PLN
+                unit_amount: 2900
               },
 
               quantity: 1
@@ -525,14 +456,13 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ===================================================
-  // SUCCESS
+  // PAYMENT SUCCESS
   // ===================================================
 
   if (
     req.method === 'GET' &&
     req.url.startsWith('/api/payment-success')
   ) {
-
     res.writeHead(200, {
       'Content-Type':
         'text/html; charset=utf-8'
@@ -541,7 +471,6 @@ const server = http.createServer(async (req, res) => {
     return res.end(`
       <!DOCTYPE html>
       <html lang="pl">
-
       <head>
         <meta charset="UTF-8">
         <title>Płatność zakończona</title>
@@ -572,14 +501,13 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ===================================================
-  // ANULOWANIE PŁATNOŚCI
+  // PAYMENT CANCEL
   // ===================================================
 
   if (
     req.method === 'GET' &&
     req.url.startsWith('/api/payment-cancel')
   ) {
-
     res.writeHead(200, {
       'Content-Type':
         'text/html; charset=utf-8'
@@ -588,7 +516,6 @@ const server = http.createServer(async (req, res) => {
     return res.end(`
       <!DOCTYPE html>
       <html lang="pl">
-
       <head>
         <meta charset="UTF-8">
         <title>Płatność anulowana</title>
@@ -623,7 +550,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 // =====================================================
-// START SERVERA
+// START
 // =====================================================
 
 server.listen(PORT, () => {
