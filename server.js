@@ -12,6 +12,32 @@ const pool = new Pool({
     : false
 });
 
+// ===================================================
+// ONLINE — osoby aktywne w ciągu ostatnich 5 minut
+// ===================================================
+
+const onlineUsers = new Map();
+const ONLINE_TIMEOUT_MS = 5 * 60 * 1000;
+
+function cleanupOnlineUsers() {
+  const now = Date.now();
+
+  for (const [id, lastSeen] of onlineUsers.entries()) {
+    if (now - lastSeen > ONLINE_TIMEOUT_MS) {
+      onlineUsers.delete(id);
+    }
+  }
+}
+
+function getOnlineCount() {
+  cleanupOnlineUsers();
+  return onlineUsers.size;
+}
+
+// ===================================================
+// BAZA DANYCH
+// ===================================================
+
 async function setupDatabase() {
   try {
     await pool.query(`
@@ -46,6 +72,10 @@ async function setupDatabase() {
 
 setupDatabase();
 
+// ===================================================
+// ODPOWIEDŹ JSON
+// ===================================================
+
 function send(res, status, body) {
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
@@ -56,6 +86,10 @@ function send(res, status, body) {
 
   res.end(JSON.stringify(body));
 }
+
+// ===================================================
+// ODCZYT BODY
+// ===================================================
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -98,6 +132,10 @@ function readRawBody(req) {
   });
 }
 
+// ===================================================
+// OZNACZENIE UŻYTKOWNIKA JAKO OPŁACONEGO
+// ===================================================
+
 async function markUserAsPaid(email) {
   if (!email) {
     console.log("Brak emaila.");
@@ -128,6 +166,10 @@ async function markUserAsPaid(email) {
   return true;
 }
 
+// ===================================================
+// SERVER
+// ===================================================
+
 const server = http.createServer(async (req, res) => {
 
   // ===================================================
@@ -142,6 +184,68 @@ const server = http.createServer(async (req, res) => {
     });
 
     return res.end();
+  }
+
+  // ===================================================
+  // STATYSTYKI
+  // ===================================================
+
+  if (
+    req.method === 'GET' &&
+    req.url.startsWith('/api/stats')
+  ) {
+    try {
+      const result = await pool.query(
+        'SELECT COUNT(*)::int AS count FROM users WHERE has_paid = TRUE'
+      );
+
+      const bought = result.rows[0].count;
+
+      return send(res, 200, {
+        bought: bought,
+        online: getOnlineCount(),
+        price: bought < 20 ? 29 : 49
+      });
+
+    } catch (err) {
+      console.error('Błąd pobierania statystyk:', err);
+
+      return send(res, 500, {
+        error: 'Nie udało się pobrać statystyk.'
+      });
+    }
+  }
+
+  // ===================================================
+  // ONLINE
+  // ===================================================
+
+  if (
+    req.method === 'POST' &&
+    req.url.startsWith('/api/online')
+  ) {
+    try {
+      const body = await readBody(req);
+
+      const visitorId =
+        typeof body.visitorId === 'string' &&
+        body.visitorId.trim()
+          ? body.visitorId.trim()
+          : '';
+
+      if (visitorId) {
+        onlineUsers.set(visitorId, Date.now());
+      }
+
+      return send(res, 200, {
+        online: getOnlineCount()
+      });
+
+    } catch (err) {
+      return send(res, 400, {
+        error: 'Nieprawidłowe dane.'
+      });
+    }
   }
 
   // ===================================================
@@ -352,7 +456,9 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ===================================================
-  // STRIPE CHECKOUT — 29 PLN
+  // STRIPE CHECKOUT
+  // 20 pierwszych opłaconych osób = 29 PLN
+  // następnie = 49 PLN
   // ===================================================
 
   if (
@@ -397,8 +503,28 @@ const server = http.createServer(async (req, res) => {
         });
       }
 
+      // Liczba osób, które już opłaciły kurs
+      const paidUsersResult = await pool.query(
+        `
+          SELECT COUNT(*)::int AS count
+          FROM users
+          WHERE has_paid = TRUE
+        `
+      );
+
+      const paidUsersCount =
+        paidUsersResult.rows[0].count;
+
+      // Pierwsze 20 osób = 29 PLN
+      // Od 21 osoby = 49 PLN
+      const currentPrice =
+        paidUsersCount < 20
+          ? 2900
+          : 4900;
+
       const session =
         await stripe.checkout.sessions.create({
+
           payment_method_types: [
             'card',
             'blik'
@@ -410,13 +536,13 @@ const server = http.createServer(async (req, res) => {
                 currency: 'pln',
 
                 product_data: {
-                  name: 'Dostęp do serwisu'
+                  name:
+                    currentPrice === 2900
+                      ? 'LOOKSMAXER — cena promocyjna 29 PLN'
+                      : 'LOOKSMAXER — cena 49 PLN'
                 },
 
-                // =====================================
-                // 29,00 PLN
-                // =====================================
-                unit_amount: 2900
+                unit_amount: currentPrice
               },
 
               quantity: 1
@@ -550,9 +676,9 @@ const server = http.createServer(async (req, res) => {
   });
 });
 
-// =====================================================
+// ===================================================
 // START
-// =====================================================
+// ===================================================
 
 server.listen(PORT, () => {
   console.log(
