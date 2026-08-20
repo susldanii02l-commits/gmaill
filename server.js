@@ -64,9 +64,9 @@ async function setupDatabase() {
       );
     `);
 
-    console.log("Tabela users jest gotowa.");
+    console.log('Tabela users jest gotowa.');
   } catch (err) {
-    console.error("Błąd konfiguracji bazy danych:", err);
+    console.error('Błąd konfiguracji bazy danych:', err);
   }
 }
 
@@ -80,8 +80,8 @@ function send(res, status, body) {
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS'
+    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type'
   });
 
   res.end(JSON.stringify(body));
@@ -97,16 +97,11 @@ function readBody(req) {
 
     req.on('data', chunk => {
       body += chunk;
-
-      if (body.length > 1e6) {
-        req.destroy();
-        reject(new Error('Request body too large'));
-      }
     });
 
     req.on('end', () => {
       try {
-        resolve(JSON.parse(body || '{}'));
+        resolve(body ? JSON.parse(body) : {});
       } catch (err) {
         reject(err);
       }
@@ -116,326 +111,129 @@ function readBody(req) {
   });
 }
 
-function readRawBody(req) {
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-
-    req.on('data', chunk => {
-      chunks.push(chunk);
-    });
-
-    req.on('end', () => {
-      resolve(Buffer.concat(chunks));
-    });
-
-    req.on('error', reject);
-  });
-}
-
 // ===================================================
-// OZNACZENIE UŻYTKOWNIKA JAKO OPŁACONEGO
-// ===================================================
-
-async function markUserAsPaid(email) {
-  if (!email) {
-    console.log("Brak emaila.");
-    return false;
-  }
-
-  const normalizedEmail = email.trim().toLowerCase();
-
-  const result = await pool.query(
-    `
-      UPDATE users
-      SET has_paid = TRUE
-      WHERE LOWER(email) = $1
-      RETURNING id, email, has_paid
-    `,
-    [normalizedEmail]
-  );
-
-  if (result.rows.length === 0) {
-    console.log(`Nie znaleziono użytkownika: ${normalizedEmail}`);
-    return false;
-  }
-
-  console.log(
-    `Użytkownik ${normalizedEmail} został oznaczony jako opłacony.`
-  );
-
-  return true;
-}
-
-// ===================================================
-// SERVER
+// SERWER
 // ===================================================
 
 const server = http.createServer(async (req, res) => {
 
-  // ===================================================
   // CORS
-  // ===================================================
-
   if (req.method === 'OPTIONS') {
     res.writeHead(204, {
       'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS'
+      'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type'
     });
 
-    return res.end();
+    res.end();
+    return;
   }
 
-  // ===================================================
-  // STATYSTYKI
-  // ===================================================
+  try {
 
-  if (
-    req.method === 'GET' &&
-    req.url.startsWith('/api/stats')
-  ) {
-    try {
-      const result = await pool.query(
-        'SELECT COUNT(*)::int AS count FROM users WHERE has_paid = TRUE'
-      );
+    // =================================================
+    // REJESTRACJA
+    // =================================================
 
-      const bought = result.rows[0].count;
+    if (req.method === 'POST' && req.url === '/api/register') {
 
-      return send(res, 200, {
-        bought: bought,
-        online: getOnlineCount(),
-        price: bought < 20 ? 29 : 49
-      });
-
-    } catch (err) {
-      console.error('Błąd pobierania statystyk:', err);
-
-      return send(res, 500, {
-        error: 'Nie udało się pobrać statystyk.'
-      });
-    }
-  }
-
-  // ===================================================
-  // ONLINE
-  // ===================================================
-
-  if (
-    req.method === 'POST' &&
-    req.url.startsWith('/api/online')
-  ) {
-    try {
-      const body = await readBody(req);
-
-      const visitorId =
-        typeof body.visitorId === 'string' &&
-        body.visitorId.trim()
-          ? body.visitorId.trim()
-          : '';
-
-      if (visitorId) {
-        onlineUsers.set(visitorId, Date.now());
-      }
-
-      return send(res, 200, {
-        online: getOnlineCount()
-      });
-
-    } catch (err) {
-      return send(res, 400, {
-        error: 'Nieprawidłowe dane.'
-      });
-    }
-  }
-
-  // ===================================================
-  // STRIPE WEBHOOK
-  // ===================================================
-
-  if (
-    req.method === 'POST' &&
-    req.url === '/api/stripe-webhook'
-  ) {
-    try {
-      const rawBody = await readRawBody(req);
-      const signature = req.headers['stripe-signature'];
-
-      if (!signature) {
-        return send(res, 400, {
-          error: 'Brak podpisu Stripe.'
-        });
-      }
-
-      if (!process.env.STRIPE_WEBHOOK_SECRET) {
-        return send(res, 500, {
-          error: 'Brak konfiguracji webhooka Stripe.'
-        });
-      }
-
-      let event;
-
-      try {
-        event = stripe.webhooks.constructEvent(
-          rawBody,
-          signature,
-          process.env.STRIPE_WEBHOOK_SECRET
-        );
-      } catch (err) {
-        console.error(
-          "Nieprawidłowy podpis Stripe:",
-          err.message
-        );
-
-        return send(res, 400, {
-          error: 'Nieprawidłowy podpis webhooka.'
-        });
-      }
-
-      console.log(`Stripe event: ${event.type}`);
-
-      if (event.type === 'checkout.session.completed') {
-        const session = event.data.object;
-
-        if (session.payment_status === 'paid') {
-          const email =
-            session.metadata?.email ||
-            session.customer_details?.email ||
-            session.customer_email;
-
-          await markUserAsPaid(email);
-        }
-      }
-
-      if (
-        event.type ===
-        'checkout.session.async_payment_succeeded'
-      ) {
-        const session = event.data.object;
-
-        const email =
-          session.metadata?.email ||
-          session.customer_details?.email ||
-          session.customer_email;
-
-        await markUserAsPaid(email);
-      }
-
-      return send(res, 200, {
-        received: true
-      });
-
-    } catch (err) {
-      console.error("Błąd webhooka Stripe:", err);
-
-      return send(res, 500, {
-        error: 'Błąd webhooka Stripe.'
-      });
-    }
-  }
-
-  // ===================================================
-  // REJESTRACJA
-  // ===================================================
-
-  if (
-    req.method === 'POST' &&
-    req.url.startsWith('/api/register')
-  ) {
-    try {
-      const body = await readBody(req);
-
-      const email =
-        typeof body.email === 'string'
-          ? body.email.trim().toLowerCase()
-          : '';
-
-      const password = body.password;
+      const { email, password } = await readBody(req);
 
       if (!email || !password) {
         return send(res, 400, {
-          error: 'Podaj email i hasło'
+          message: 'Email i hasło są wymagane.'
         });
       }
 
-      const hashedPassword =
-        await bcrypt.hash(password, 10);
+      const normalizedEmail = String(email).trim().toLowerCase();
+
+      if (password.length < 6) {
+        return send(res, 400, {
+          message: 'Hasło musi mieć minimum 6 znaków.'
+        });
+      }
+
+      const existing = await pool.query(
+        `SELECT id FROM users WHERE LOWER(email) = LOWER($1)`,
+        [normalizedEmail]
+      );
+
+      if (existing.rows.length > 0) {
+        return send(res, 409, {
+          message: 'Konto z tym adresem email już istnieje.'
+        });
+      }
+
+      const passwordHash = await bcrypt.hash(password, 10);
 
       const result = await pool.query(
         `
-          INSERT INTO users
-            (email, password_hash)
-          VALUES
-            ($1, $2)
-          RETURNING id, email, has_paid
+        INSERT INTO users
+        (email, password_hash, has_paid)
+        VALUES ($1, $2, FALSE)
+        RETURNING id, email, has_paid, created_at
         `,
-        [email, hashedPassword]
+        [
+          normalizedEmail,
+          passwordHash
+        ]
       );
 
       return send(res, 200, {
         message: 'Zarejestrowano pomyślnie!',
+        userId: result.rows[0].id,
+        email: result.rows[0].email,
+        has_paid: result.rows[0].has_paid === true,
         user: result.rows[0]
       });
-
-    } catch (err) {
-      console.error("Błąd rejestracji:", err);
-
-      return send(res, 400, {
-        error:
-          'Błąd rejestracji (ten email może być już zajęty)'
-      });
     }
-  }
 
-  // ===================================================
-  // LOGOWANIE
-  // ===================================================
+    // =================================================
+    // LOGOWANIE
+    // =================================================
 
-  if (
-    req.method === 'POST' &&
-    req.url.startsWith('/api/login')
-  ) {
-    try {
-      const body = await readBody(req);
+    if (req.method === 'POST' && req.url === '/api/login') {
 
-      const email =
-        typeof body.email === 'string'
-          ? body.email.trim().toLowerCase()
-          : '';
-
-      const password = body.password;
+      const { email, password } = await readBody(req);
 
       if (!email || !password) {
         return send(res, 400, {
-          error: 'Podaj email i hasło'
+          message: 'Email i hasło są wymagane.'
         });
       }
 
-      const userResult = await pool.query(
+      const normalizedEmail = String(email).trim().toLowerCase();
+
+      const result = await pool.query(
         `
-          SELECT *
-          FROM users
-          WHERE LOWER(email) = $1
+        SELECT
+          id,
+          email,
+          password_hash,
+          has_paid
+        FROM users
+        WHERE LOWER(email) = LOWER($1)
+        LIMIT 1
         `,
-        [email]
+        [normalizedEmail]
       );
 
-      if (userResult.rows.length === 0) {
-        return send(res, 400, {
-          error: 'Błędny email lub hasło'
+      if (result.rows.length === 0) {
+        return send(res, 401, {
+          message: 'Nieprawidłowy email lub hasło.'
         });
       }
 
-      const user = userResult.rows[0];
+      const user = result.rows[0];
 
-      const validPassword =
-        await bcrypt.compare(
-          password,
-          user.password_hash
-        );
+      const passwordCorrect = await bcrypt.compare(
+        password,
+        user.password_hash
+      );
 
-      if (!validPassword) {
-        return send(res, 400, {
-          error: 'Błędny email lub hasło'
+      if (!passwordCorrect) {
+        return send(res, 401, {
+          message: 'Nieprawidłowy email lub hasło.'
         });
       }
 
@@ -443,237 +241,323 @@ const server = http.createServer(async (req, res) => {
         message: 'Zalogowano pomyślnie!',
         userId: user.id,
         email: user.email,
-        has_paid: user.has_paid
-      });
-
-    } catch (err) {
-      console.error("Błąd logowania:", err);
-
-      return send(res, 500, {
-        error: 'Błąd serwera podczas logowania'
+        has_paid: user.has_paid === true
       });
     }
-  }
 
-  // ===================================================
-  // STRIPE CHECKOUT
-  // 20 pierwszych opłaconych osób = 29 PLN
-  // następnie = 49 PLN
-  // ===================================================
+    // =================================================
+    // STATYSTYKI
+    // =================================================
 
-  if (
-    req.method === 'POST' &&
-    req.url.startsWith('/api/create-checkout-session')
-  ) {
-    try {
-      const body = await readBody(req);
+    if (req.method === 'GET' && req.url === '/api/stats') {
 
-      const email =
-        typeof body.email === 'string'
-          ? body.email.trim().toLowerCase()
-          : '';
+      const result = await pool.query(`
+        SELECT COUNT(*)::int AS bought
+        FROM users
+        WHERE has_paid = TRUE
+      `);
 
-      if (!email) {
+      const bought = Number(result.rows[0].bought || 0);
+
+      // Pierwszych 20 opłaconych osób kupuje za 29 zł.
+      // Gdy jest już 20 lub więcej, nowa cena to 49 zł.
+      const price = bought < 20 ? 29 : 49;
+
+      return send(res, 200, {
+        bought,
+        online: getOnlineCount(),
+        price
+      });
+    }
+
+    // =================================================
+    // ONLINE HEARTBEAT
+    // =================================================
+
+    if (req.method === 'POST' && req.url === '/api/online') {
+
+      const { visitorId } = await readBody(req);
+
+      if (!visitorId) {
         return send(res, 400, {
-          error: 'Wymagane podanie e-maila.'
+          message: 'Brak visitorId.'
         });
       }
 
+      onlineUsers.set(
+        String(visitorId),
+        Date.now()
+      );
+
+      cleanupOnlineUsers();
+
+      return send(res, 200, {
+        online: getOnlineCount()
+      });
+    }
+
+    // =================================================
+    // STRIPE CHECKOUT
+    // =================================================
+
+    if (
+      req.method === 'POST' &&
+      req.url === '/api/create-checkout-session'
+    ) {
+
+      const { email } = await readBody(req);
+
+      if (!email) {
+        return send(res, 400, {
+          message: 'Email jest wymagany.'
+        });
+      }
+
+      const normalizedEmail = String(email).trim().toLowerCase();
+
+      // Sprawdzamy użytkownika.
       const userResult = await pool.query(
         `
-          SELECT id, email, has_paid
-          FROM users
-          WHERE LOWER(email) = $1
+        SELECT id, email, has_paid
+        FROM users
+        WHERE LOWER(email) = LOWER($1)
+        LIMIT 1
         `,
-        [email]
+        [normalizedEmail]
       );
 
       if (userResult.rows.length === 0) {
         return send(res, 404, {
-          error:
-            'Nie znaleziono konta o tym adresie email.'
+          message: 'Nie znaleziono konta. Najpierw się zarejestruj.'
         });
       }
 
       const user = userResult.rows[0];
 
+      // Jeśli już zapłacił, nie tworzymy kolejnej płatności.
       if (user.has_paid === true) {
         return send(res, 400, {
-          error: 'To konto ma już opłacony dostęp.'
+          message: 'To konto ma już opłacony kurs.',
+          has_paid: true
         });
       }
 
-      // Liczba osób, które już opłaciły kurs
-      const paidUsersResult = await pool.query(
-        `
-          SELECT COUNT(*)::int AS count
-          FROM users
-          WHERE has_paid = TRUE
-        `
+      // Liczba osób, które już zapłaciły.
+      const countResult = await pool.query(`
+        SELECT COUNT(*)::int AS bought
+        FROM users
+        WHERE has_paid = TRUE
+      `);
+
+      const paidUsersCount = Number(
+        countResult.rows[0].bought || 0
       );
 
-      const paidUsersCount =
-        paidUsersResult.rows[0].count;
+      // 0–19 = 29 PLN
+      // 20+ = 49 PLN
+      const price = paidUsersCount < 20 ? 29 : 49;
 
-      // Pierwsze 20 osób = 29 PLN
-      // Od 21 osoby = 49 PLN
-      const currentPrice =
-        paidUsersCount < 20
-          ? 2900
-          : 4900;
+      const session = await stripe.checkout.sessions.create({
+        mode: 'payment',
 
-      const session =
-        await stripe.checkout.sessions.create({
+        customer_email: normalizedEmail,
 
-          payment_method_types: [
-            'card',
-            'blik'
-          ],
+        line_items: [
+          {
+            price_data: {
+              currency: 'pln',
 
-          line_items: [
-            {
-              price_data: {
-                currency: 'pln',
-
-                product_data: {
-                  name:
-                    currentPrice === 2900
-                      ? 'LOOKSMAXER — cena promocyjna 29 PLN'
-                      : 'LOOKSMAXER — cena 49 PLN'
-                },
-
-                unit_amount: currentPrice
+              product_data: {
+                name: 'LOOKSMAXER — Kurs'
               },
 
-              quantity: 1
-            }
-          ],
+              unit_amount: price * 100
+            },
 
-          mode: 'payment',
+            quantity: 1
+          }
+        ],
 
-          customer_email: email,
+        metadata: {
+          userId: String(user.id),
+          email: normalizedEmail
+        },
 
-          metadata: {
-            email: email,
-            user_id: String(user.id)
-          },
+        success_url:
+          `${process.env.FRONTEND_URL || 'https://example.com'}?payment=success`,
 
-          success_url:
-            'https://gmaill-production.up.railway.app/api/payment-success',
-
-          cancel_url:
-            'https://gmaill-production.up.railway.app/api/payment-cancel'
-        });
+        cancel_url:
+          `${process.env.FRONTEND_URL || 'https://example.com'}?payment=cancel`
+      });
 
       return send(res, 200, {
-        url: session.url
-      });
-
-    } catch (err) {
-      console.error(
-        "Błąd tworzenia płatności Stripe:",
-        err
-      );
-
-      return send(res, 500, {
-        error:
-          'Nie udało się utworzyć sesji płatności.'
+        url: session.url,
+        sessionId: session.id,
+        price
       });
     }
-  }
 
-  // ===================================================
-  // PAYMENT SUCCESS
-  // ===================================================
+    // =================================================
+    // STRIPE WEBHOOK
+    // =================================================
 
-  if (
-    req.method === 'GET' &&
-    req.url.startsWith('/api/payment-success')
-  ) {
-    res.writeHead(200, {
-      'Content-Type':
-        'text/html; charset=utf-8'
+    if (
+      req.method === 'POST' &&
+      req.url === '/api/stripe-webhook'
+    ) {
+
+      let rawBody = '';
+
+      await new Promise((resolve, reject) => {
+
+        req.on('data', chunk => {
+          rawBody += chunk;
+        });
+
+        req.on('end', resolve);
+
+        req.on('error', reject);
+      });
+
+      const signature = req.headers['stripe-signature'];
+
+      let event;
+
+      try {
+
+        event = stripe.webhooks.constructEvent(
+          rawBody,
+          signature,
+          process.env.STRIPE_WEBHOOK_SECRET
+        );
+
+      } catch (err) {
+
+        console.error(
+          'Błąd weryfikacji Stripe webhook:',
+          err.message
+        );
+
+        res.writeHead(400);
+
+        res.end(
+          `Webhook Error: ${err.message}`
+        );
+
+        return;
+      }
+
+      // -----------------------------------------------
+      // PŁATNOŚĆ ZAKOŃCZONA
+      // -----------------------------------------------
+
+      if (
+        event.type === 'checkout.session.completed'
+      ) {
+
+        const session = event.data.object;
+
+        const email =
+          session.customer_email ||
+          session.metadata?.email;
+
+        const userId =
+          session.metadata?.userId;
+
+        if (email || userId) {
+
+          if (userId) {
+
+            await pool.query(
+              `
+              UPDATE users
+              SET has_paid = TRUE
+              WHERE id = $1
+              `,
+              [userId]
+            );
+
+          } else if (email) {
+
+            await pool.query(
+              `
+              UPDATE users
+              SET has_paid = TRUE
+              WHERE LOWER(email) = LOWER($1)
+              `,
+              [email]
+            );
+          }
+
+          console.log(
+            'Płatność potwierdzona. Kurs aktywowany:',
+            email || userId
+          );
+        }
+      }
+
+      res.writeHead(200, {
+        'Content-Type': 'application/json'
+      });
+
+      res.end(
+        JSON.stringify({
+          received: true
+        })
+      );
+
+      return;
+    }
+
+    // =================================================
+    // PAYMENT SUCCESS
+    // =================================================
+
+    if (
+      req.method === 'GET' &&
+      req.url === '/api/payment-success'
+    ) {
+
+      return send(res, 200, {
+        success: true,
+        message: 'Płatność zakończona pomyślnie.'
+      });
+    }
+
+    // =================================================
+    // PAYMENT CANCEL
+    // =================================================
+
+    if (
+      req.method === 'GET' &&
+      req.url === '/api/payment-cancel'
+    ) {
+
+      return send(res, 200, {
+        success: false,
+        message: 'Płatność została anulowana.'
+      });
+    }
+
+    // =================================================
+    // 404
+    // =================================================
+
+    return send(res, 404, {
+      message: 'Nie znaleziono endpointu.'
     });
 
-    return res.end(`
-      <!DOCTYPE html>
-      <html lang="pl">
-      <head>
-        <meta charset="UTF-8">
-        <title>Płatność zakończona</title>
-      </head>
+  } catch (err) {
 
-      <body style="
-        background:#000;
-        color:#fff;
-        font-family:sans-serif;
-        text-align:center;
-        padding-top:50px;
-      ">
+    console.error(
+      'Błąd serwera:',
+      err
+    );
 
-        <h1>Płatność powiodła się! 🎉</h1>
-
-        <p>
-          Płatność została przekazana do weryfikacji.
-        </p>
-
-        <p>
-          Możesz wrócić na stronę i zalogować się
-          ponownie.
-        </p>
-
-      </body>
-      </html>
-    `);
-  }
-
-  // ===================================================
-  // PAYMENT CANCEL
-  // ===================================================
-
-  if (
-    req.method === 'GET' &&
-    req.url.startsWith('/api/payment-cancel')
-  ) {
-    res.writeHead(200, {
-      'Content-Type':
-        'text/html; charset=utf-8'
+    return send(res, 500, {
+      message: 'Wewnętrzny błąd serwera.'
     });
-
-    return res.end(`
-      <!DOCTYPE html>
-      <html lang="pl">
-      <head>
-        <meta charset="UTF-8">
-        <title>Płatność anulowana</title>
-      </head>
-
-      <body style="
-        background:#000;
-        color:#fff;
-        font-family:sans-serif;
-        text-align:center;
-        padding-top:50px;
-      ">
-
-        <h1>Płatność została anulowana.</h1>
-
-        <p>
-          Możesz spróbować ponownie na stronie.
-        </p>
-
-      </body>
-      </html>
-    `);
   }
-
-  // ===================================================
-  // 404
-  // ===================================================
-
-  return send(res, 404, {
-    error: 'Nie znaleziono takiej ścieżki'
-  });
 });
 
 // ===================================================
@@ -681,7 +565,9 @@ const server = http.createServer(async (req, res) => {
 // ===================================================
 
 server.listen(PORT, () => {
+
   console.log(
     `Serwer działa na porcie ${PORT}`
   );
+
 });
